@@ -19,11 +19,18 @@
     result))
 
 (defun get-retry-after (response-headers)
-  "Extract retry-after seconds from response headers, or NIL if absent."
-  (let ((value (cdr (assoc "retry-after" response-headers :test #'string-equal))))
+  "Extract retry-after seconds from response headers, or NIL if absent.
+Handles both alist and hash-table header formats."
+  (let ((value (typecase response-headers
+                 (hash-table (gethash "retry-after" response-headers))
+                 (list (cdr (assoc "retry-after" response-headers :test #'string-equal))))))
     (when value
-      (handler-case (parse-integer (string-trim '(#\Space) value) :junk-allowed t)
+      (handler-case (parse-integer (string-trim '(#\Space) (princ-to-string value))
+                                   :junk-allowed t)
         (error () nil)))))
+
+(defvar *last-api-call-time* 0
+  "Universal time of the last API call, for rate limiting.")
 
 (defun call-claude (config system-prompt user-content &key (timeout 120))
   "Call the Claude API with retries. Retries rate-limit and server errors
@@ -53,6 +60,13 @@ for up to TIMEOUT seconds (default 120). Returns response text or NIL."
         (when (>= (get-universal-time) deadline)
           (log-message :error "Claude API: giving up after ~Ds" timeout)
           (return nil))
+        ;; Throttle: ensure minimum interval between API calls
+        (let ((min-interval (getf config :api-min-interval-seconds 13)))
+          (when (> min-interval 0)
+            (let ((elapsed (- (get-universal-time) *last-api-call-time*)))
+              (when (< elapsed min-interval)
+                (sleep (- min-interval elapsed))))))
+        (setf *last-api-call-time* (get-universal-time))
         (handler-case
             (multiple-value-bind (body-bytes status response-headers)
                 (dex:post *claude-api-url*
@@ -74,7 +88,7 @@ for up to TIMEOUT seconds (default 120). Returns response text or NIL."
                  (error "Claude API authentication failed"))
                 ((= status 429)
                  (let ((wait (or (get-retry-after response-headers)
-                                 (min (* attempt 5) 30))))
+                                 (min (* attempt 15) 60))))
                    (log-message :warn "Rate limited (429), waiting ~Ds (attempt ~D)"
                                 wait attempt)
                    (sleep wait)))
