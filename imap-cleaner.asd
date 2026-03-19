@@ -1,12 +1,12 @@
 (defsystem "imap-cleaner"
   :description "IMAP spam filter using Claude API for classification"
   :version "0.1.0"
-  :depends-on ("postoffice"
-               "cl+ssl"
+  :depends-on ("mel-base"
                "dexador"
                "yason"
                "alexandria"
-               "cl-ppcre")
+               "cl-ppcre"
+               "babel")
   :serial t
   :components ((:module "src"
                 :serial t

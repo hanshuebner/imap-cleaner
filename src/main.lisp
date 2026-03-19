@@ -19,7 +19,7 @@
 
 (defun process-recent (config mb &key (count 10))
   "Process the last COUNT messages in the mailbox."
-  (let* ((all-uids (net.post-office:search-mailbox mb '(not :deleted) :uid t))
+  (let* ((all-uids (imap-search mb "not deleted"))
          (recent (last all-uids count)))
     (log-message :info "Checking last ~D message~:P on startup" (length recent))
     (dolist (uid recent)

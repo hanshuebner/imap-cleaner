@@ -55,7 +55,7 @@ STAGE is :headers or :body indicating which stage made the decision."
               ((eq (spam-verdict-label verdict) :spam)
                (if (getf config :dry-run)
                    (progn
-                     (net.post-office:alter-flags mb uid :add-flags '(:\\flagged) :uid t)
+                     (imap-add-flags mb uid "\\Flagged")
                      (log-message :info "DRY RUN: Flagged UID ~A (would move to ~A)"
                                   uid (getf config :spam-folder)))
                    (progn

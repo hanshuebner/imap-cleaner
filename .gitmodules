@@ -1,0 +1,3 @@
+[submodule "mel-base"]
+	path = mel-base
+	url = https://github.com/hanshuebner/mel-base.git

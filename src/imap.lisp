@@ -38,83 +38,67 @@
   "Check if UID has already been processed."
   (gethash uid-string *processed-uids*))
 
-(defun make-ssl-imap-connection (host &key (port 993) user password (timeout 30))
-  "Connect to an IMAP server over SSL/TLS.
-Creates a plain socket, wraps it with cl+ssl, then performs IMAP login."
-  (let* ((sock (acl-compat.socket:make-socket :remote-host host
-                                               :remote-port port))
-         (ssl-stream (cl+ssl:make-ssl-client-stream sock
-                                                     :hostname host
-                                                     :external-format :latin-1))
-         (imap (make-instance 'net.post-office::imap-mailbox
-                 :socket ssl-stream
-                 :host host
-                 :timeout timeout
-                 :state :unauthorized)))
-    ;; Read server greeting
-    (multiple-value-bind (tag cmd count extra comment)
-        (net.post-office::get-and-parse-from-imap-server imap)
-      (declare (ignore cmd count extra))
-      (unless (eq :untagged tag)
-        (net.post-office:po-error :error-response
-                                  :server-string comment)))
-    ;; Login
-    (net.post-office::send-command-get-results
-     imap
-     (format nil "login ~a ~a" user password)
-     #'net.post-office::handle-untagged-response
-     (lambda (mb command count extra comment)
-       (net.post-office::check-for-success mb command count extra
-                                           comment "login")))
-    ;; Find separator character
-    (let ((res (net.post-office:mailbox-list imap)))
-      (let ((sep (cadr (car res))))
-        (when sep
-          (setf (net.post-office::mailbox-separator imap) sep))))
-    imap))
+;;; mel-base IMAP helpers
+
+(defun imap-cmd (folder fmt &rest args)
+  "Send a raw IMAP command and process the response via mel-base."
+  (apply #'mel.folders.imap::send-command folder fmt args)
+  (mel.folders.imap::process-response folder))
+
+(defun imap-add-flags (folder uid flags-string)
+  "Add IMAP flags to a message by UID.
+FLAGS-STRING is raw IMAP syntax, e.g. \"\\\\Flagged\" or \"$SpamChecked\"."
+  (imap-cmd folder "~A uid store ~A +flags (~A)" "t01" uid flags-string))
+
+(defun imap-remove-flags (folder uid flags-string)
+  "Remove IMAP flags from a message by UID."
+  (imap-cmd folder "~A uid store ~A -flags (~A)" "t01" uid flags-string))
+
+(defun imap-search (folder query)
+  "Search mailbox with raw IMAP search query. Returns list of UIDs (numbers)."
+  (mel.folders.imap::send-command folder "~A uid search ~A" "t01" query)
+  (let (uids)
+    (mel.folders.imap::process-response
+     folder :on-list (lambda (list) (setf uids list)))
+    uids))
+
+;;; Connection management
 
 (defun connect-imap (config)
-  "Connect to IMAP server over SSL. Returns the mailbox object."
+  "Connect to IMAP server over SSL. Returns a mel-base imaps-folder."
   (let ((host (getf config :imap-host))
         (port (getf config :imap-port 993))
         (user (getf config :imap-user))
-        (password (getf config :imap-password)))
+        (password (getf config :imap-password))
+        (inbox (getf config :inbox "INBOX")))
     (log-message :info "Connecting to IMAP ~A:~A as ~A" host port user)
-    (let ((mb (make-ssl-imap-connection host
-                                        :port port
-                                        :user user
-                                        :password password)))
-      ;; Check for custom keyword support
-      (net.post-office:select-mailbox mb (getf config :inbox "INBOX"))
-      (let ((pflags (net.post-office:mailbox-permanent-flags mb)))
-        (setf *use-custom-flags*
-              (and pflags (or (member :\\* pflags)
-                              (member :$spamchecked pflags :test #'string-equal)))))
-      (if *use-custom-flags*
-          (log-message :info "Server supports custom flags, using $SpamChecked")
-          (progn
-            (log-message :info "Using file-based UID tracking")
-            (load-processed-uids)))
-      mb)))
+    (let ((folder (mel.folders.imap:make-imaps-folder
+                   :host host
+                   :port port
+                   :username user
+                   :password password
+                   :mailbox inbox)))
+      ;; Force connection and mailbox selection
+      (mel.folders.imap::ensure-connection folder)
+      (setf *use-custom-flags* t)
+      (log-message :info "Using $SpamChecked flag for tracking")
+      folder)))
 
-(defun fetch-unseen-uids (mb config)
+(defun fetch-unseen-uids (folder config)
   "Get UIDs of messages that haven't been spam-checked."
-  (net.post-office:select-mailbox mb (getf config :inbox "INBOX"))
-  (let ((all-uids (net.post-office:search-mailbox mb '(not :deleted) :uid t)))
+  (declare (ignore config))
+  (let ((all-uids (imap-search folder "not deleted")))
     (if *use-custom-flags*
-        ;; Search for messages without $SpamChecked flag
-        (let ((checked (net.post-office:search-mailbox mb '(keyword "$SpamChecked") :uid t)))
+        (let ((checked (imap-search folder "keyword $SpamChecked")))
           (set-difference all-uids checked))
-        ;; Filter using local UID tracking
         (remove-if (lambda (uid) (uid-processed-p (princ-to-string uid)))
                    all-uids))))
 
-(defun fetch-headers (mb uid)
-  "Fetch RFC822 headers for a message by UID."
-  (let ((parts (net.post-office:fetch-parts mb uid '("RFC822.HEADER")
-                                            :uid t)))
-    (when parts
-      (net.post-office:fetch-field uid "RFC822.HEADER" parts :uid t))))
+(defun fetch-headers (folder uid)
+  "Fetch RFC822 headers for a message by UID. Returns a string."
+  (let ((header-bytes (mel.folders.imap::fetch-message-header folder uid)))
+    (when header-bytes
+      (babel:octets-to-string header-bytes :encoding :latin-1))))
 
 (defun strip-html (text)
   "Remove HTML tags from text."
@@ -122,7 +106,6 @@ Creates a plain socket, wraps it with cl+ssl, then performs IMAP login."
 
 (defun extract-text-body (raw-body max-chars)
   "Extract readable text from a raw email body, truncated to MAX-CHARS."
-  ;; Simple approach: strip HTML tags, collapse whitespace
   (let* ((stripped (strip-html raw-body))
          (collapsed (cl-ppcre:regex-replace-all "\\s+" stripped " "))
          (trimmed (string-trim '(#\Space #\Newline #\Return #\Tab) collapsed)))
@@ -130,26 +113,24 @@ Creates a plain socket, wraps it with cl+ssl, then performs IMAP login."
         (subseq trimmed 0 max-chars)
         trimmed)))
 
-(defun fetch-body (mb uid config)
+(defun fetch-body (folder uid config)
   "Fetch and extract text body for a message by UID."
-  (let ((parts (net.post-office:fetch-parts mb uid '("RFC822")
-                                            :uid t)))
-    (when parts
-      (let ((raw (net.post-office:fetch-field uid "RFC822" parts :uid t)))
-        (when raw
-          (extract-text-body raw (getf config :body-max-chars 4000)))))))
+  (let ((body-bytes (mel.folders.imap::fetch-message-body folder uid)))
+    (when body-bytes
+      (let ((raw (babel:octets-to-string body-bytes :encoding :latin-1)))
+        (extract-text-body raw (getf config :body-max-chars 4000))))))
 
-(defun move-to-spam (mb uid spam-folder)
+(defun move-to-spam (folder uid spam-folder)
   "Move a message to the spam folder: COPY, flag deleted, expunge."
-  (net.post-office:copy-to-mailbox mb uid spam-folder :uid t)
-  (net.post-office:alter-flags mb uid :add-flags '(:deleted) :uid t)
-  (net.post-office:expunge-mailbox mb))
+  (imap-cmd folder "~A uid copy ~A ~A" "t01" uid spam-folder)
+  (imap-add-flags folder uid "\\Deleted")
+  (mel.folders.imap::expunge-mailbox folder))
 
-(defun mark-processed (mb uid)
+(defun mark-processed (folder uid)
   "Mark a message as processed (spam-checked)."
   (if *use-custom-flags*
       (handler-case
-          (net.post-office:alter-flags mb uid :add-flags '(:$spamchecked) :uid t)
+          (imap-add-flags folder uid "$SpamChecked")
         (error (e)
           (log-message :warn "Failed to set $SpamChecked flag: ~A, falling back to file" e)
           (save-processed-uid (princ-to-string uid))
@@ -158,20 +139,22 @@ Creates a plain socket, wraps it with cl+ssl, then performs IMAP login."
         (save-processed-uid (princ-to-string uid))
         (setf (gethash (princ-to-string uid) *processed-uids*) t))))
 
-(defun ensure-spam-folder (mb folder)
+(defun ensure-spam-folder (folder spam-folder-name)
   "Create the spam folder if it doesn't exist."
   (handler-case
       (progn
-        (net.post-office:select-mailbox mb folder)
-        (log-message :debug "Spam folder ~A exists" folder))
+        (imap-cmd folder "~A select ~A" "t01" spam-folder-name)
+        ;; Re-select original mailbox
+        (mel.folders.imap::select-mailbox folder)
+        (log-message :debug "Spam folder ~A exists" spam-folder-name))
     (error ()
-      (log-message :info "Creating spam folder: ~A" folder)
-      (net.post-office:create-mailbox mb folder))))
+      (log-message :info "Creating spam folder: ~A" spam-folder-name)
+      (mel.folders.imap::create-mailbox folder spam-folder-name))))
 
-(defun disconnect-imap (mb)
+(defun disconnect-imap (folder)
   "Disconnect from IMAP server."
   (handler-case
-      (net.post-office:close-connection mb)
+      (mel:close-folder folder)
     (error (e)
       (log-message :warn "Error disconnecting: ~A" e))))
 
@@ -184,10 +167,10 @@ Creates a plain socket, wraps it with cl+ssl, then performs IMAP login."
       (when groups
         (aref groups 0)))))
 
-(defun noop-keepalive (mb)
+(defun noop-keepalive (folder)
   "Send NOOP to keep connection alive."
   (handler-case
-      (net.post-office:noop mb)
+      (mel.folders.imap::noop folder)
     (error (e)
       (log-message :warn "NOOP failed: ~A" e)
       (error e))))

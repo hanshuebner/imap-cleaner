@@ -3,120 +3,86 @@
 (defvar *idle-supported* :unknown
   "Whether the IMAP server supports IDLE. :unknown, T, or NIL.")
 
-(defun idle-capable-p (mb)
+(defun idle-capable-p (folder)
   "Check if the IMAP server supports the IDLE extension.
 Caches result in *idle-supported*; reset to :unknown on reconnect."
   (when (eq *idle-supported* :unknown)
     (setf *idle-supported*
           (handler-case
-              (let ((capabilities nil))
-                (net.post-office::send-command-get-results
-                 mb "CAPABILITY"
-                 (lambda (mb cmd count extra comment)
-                   (declare (ignore mb count extra))
-                   (when (eq cmd :capability)
-                     (setf capabilities comment)))
-                 (lambda (mb cmd count extra comment)
-                   (declare (ignore mb cmd count extra comment))))
-                (and capabilities
-                     (search "IDLE" (string-upcase capabilities))
-                     t))
+              (let ((caps (mel.folders.imap::capability folder)))
+                (declare (ignore caps))
+                (let ((cap-list (slot-value folder 'mel.folders.imap::capabilities)))
+                  (and cap-list
+                       (member :idle cap-list)
+                       t)))
             (error (e)
               (log-message :warn "CAPABILITY check failed: ~A" e)
               nil))))
   *idle-supported*)
 
-(defun send-idle-done (mb tag)
-  "Send DONE to terminate IDLE, read responses until tagged OK.
-TAG is the tag used for the original IDLE command."
-  (let ((sock (net.post-office::post-office-socket mb)))
-    (format sock "DONE~A" net.post-office::*crlf*)
-    (force-output sock))
-  ;; Read until we get the tagged response
-  (loop repeat 10
-        do (handler-case
-               (multiple-value-bind (buf count)
-                   (net.post-office::get-line-from-server mb)
-                 (multiple-value-bind (resp-tag cmd rcount extra comment)
-                     (net.post-office::parse-imap-response buf count)
-                   (cond
-                     ;; Tagged response — we're done
-                     ((and resp-tag (string-equal resp-tag tag))
-                      (return))
-                     ;; Untagged — let the library handle it
-                     ((eq resp-tag :untagged)
-                      (net.post-office::handle-untagged-response
-                       mb cmd rcount extra comment)))))
-             (error () (return)))))
-
-(defun idle-wait (mb &key (timeout 1500))
+(defun idle-wait (folder &key (timeout 1500))
   "Enter IDLE mode and wait for mailbox changes.
 Returns :mailbox-change, :timeout, or :error.
 TIMEOUT is in seconds (default 1500 = 25 minutes)."
-  (let* ((tag (net.post-office::get-next-tag))
-         (sock (net.post-office::post-office-socket mb))
-         (deadline (+ (get-universal-time) timeout))
-         (result :timeout))
+  (let ((stream (mel.folders.imap::connection folder))
+        (deadline (+ (get-universal-time) timeout))
+        (result :timeout))
     (unwind-protect
          (progn
            ;; Send IDLE command
-           (format sock "~A IDLE~A" tag net.post-office::*crlf*)
-           (force-output sock)
+           (mel.folders.imap::send-command folder "~A idle" "t01")
            ;; Read continuation response (+)
-           (multiple-value-bind (buf count)
-               (net.post-office::get-line-from-server mb)
-             (declare (ignore count))
-             (unless (and buf (plusp (length buf)) (char= (char buf 0) #\+))
-               (log-message :warn "IDLE not accepted by server: ~A" buf)
+           ;; process-response handles + via on-continuation
+           ;; But we need to NOT block waiting for tagged OK.
+           ;; Read one line manually to get the + continuation.
+           (let ((response (mel.folders.imap::read-response stream)))
+             (unless (eq (first response) :+)
+               (log-message :warn "IDLE not accepted by server: ~A" response)
                (setf result :error)
                (return-from idle-wait result)))
            ;; Poll for server pushes using listen + sleep
-           ;; We can't use get-line-from-server with short timeouts because
-           ;; it closes the socket on timeout errors.
            (loop
              (when (>= (get-universal-time) deadline)
                (setf result :timeout)
                (return))
-             (if (listen sock)
-                 ;; Data available — read and parse the response
+             (if (listen stream)
+                 ;; Data available — read and check for mailbox changes
                  (handler-case
-                     (multiple-value-bind (buf count)
-                         (net.post-office::get-line-from-server mb)
-                       (multiple-value-bind (resp-tag cmd rcount extra comment)
-                           (net.post-office::parse-imap-response buf count)
-                         (declare (ignore resp-tag))
-                         (case cmd
-                           ((:exists :recent :expunge)
-                            (log-message :debug "IDLE: ~A ~A" cmd rcount)
-                            (setf result :mailbox-change)
-                            (return))
-                           (t
-                            (net.post-office::handle-untagged-response
-                             mb cmd rcount extra comment)))))
+                     (let ((response (mel.folders.imap::read-response stream)))
+                       (when (and (eql (first response) #\*)
+                                  (numberp (second response)))
+                         (let ((cmd (first (third response))))
+                           (when (member cmd '(:exists :recent :expunge))
+                             (log-message :debug "IDLE: ~A ~A" cmd (second response))
+                             (setf result :mailbox-change)
+                             (return)))))
                    (error (e)
                      (log-message :warn "IDLE read error: ~A" e)
                      (setf result :error)
                      (return)))
-                 ;; No data yet — sleep briefly before checking again
+                 ;; No data yet — sleep briefly
                  (sleep 1))))
-      ;; Cleanup: terminate IDLE and restore timeout
+      ;; Cleanup: terminate IDLE
       (when (member result '(:mailbox-change :timeout))
-        (handler-case (send-idle-done mb tag)
+        (handler-case
+            (progn
+              (mel.folders.imap::send-command folder "done")
+              (mel.folders.imap::process-response folder))
           (error (e)
-            (log-message :warn "Error sending IDLE DONE: ~A" e)))))
+            (log-message :warn "Error ending IDLE: ~A" e)))))
     result))
 
 (defun connect-monitor (config)
-  "Open a dedicated IMAP connection for IDLE monitoring.
-This connection should only be used for IDLE, not for FETCH/COPY/etc."
+  "Open a dedicated IMAP connection for IDLE monitoring."
   (log-message :info "Opening monitor connection for IDLE")
-  (let ((mb (make-ssl-imap-connection
-             (getf config :imap-host)
-             :user (getf config :imap-user)
-             :password (getf config :imap-password)
-             :port (getf config :imap-port 993))))
-    (net.post-office:select-mailbox mb (getf config :inbox "INBOX"))
-    mb))
+  (let ((folder (mel.folders.imap:make-imaps-folder
+                 :host (getf config :imap-host)
+                 :port (getf config :imap-port 993)
+                 :username (getf config :imap-user)
+                 :password (getf config :imap-password)
+                 :mailbox (getf config :inbox "INBOX"))))
+    (mel.folders.imap::ensure-connection folder)
+    folder))
 
 (defun run-idle-monitor (config on-new-mail)
   "Main IDLE monitoring loop. Calls ON-NEW-MAIL (a function of no arguments)
