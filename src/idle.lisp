@@ -1,73 +1,41 @@
 (in-package #:imap-cleaner)
 
-(defvar *idle-supported* :unknown
-  "Whether the IMAP server supports IDLE. :unknown, T, or NIL.")
-
-(defun idle-capable-p (folder)
-  "Check if the IMAP server supports the IDLE extension.
-Caches result in *idle-supported*; reset to :unknown on reconnect."
-  (when (eq *idle-supported* :unknown)
-    (setf *idle-supported*
-          (handler-case
-              (let ((caps (mel.folders.imap::capability folder)))
-                (declare (ignore caps))
-                (let ((cap-list (slot-value folder 'mel.folders.imap::capabilities)))
-                  (and cap-list
-                       (member :idle cap-list)
-                       t)))
-            (error (e)
-              (log-message :warn "CAPABILITY check failed: ~A" e)
-              nil))))
-  *idle-supported*)
-
 (defun idle-wait (folder &key (timeout 1500))
   "Enter IDLE mode and wait for mailbox changes.
 Returns :mailbox-change, :timeout, or :error.
 TIMEOUT is in seconds (default 1500 = 25 minutes)."
-  (let ((stream (mel.folders.imap::connection folder))
-        (deadline (+ (get-universal-time) timeout))
+  (let ((deadline (+ (get-universal-time) timeout))
         (result :timeout))
     (unwind-protect
          (progn
-           ;; Send IDLE command
-           (mel.folders.imap::send-command folder "~A idle" "t01")
-           ;; Read continuation response (+)
-           ;; process-response handles + via on-continuation
-           ;; But we need to NOT block waiting for tagged OK.
-           ;; Read one line manually to get the + continuation.
-           (let ((response (mel.folders.imap::read-response stream)))
-             (unless (eq (first response) :+)
-               (log-message :warn "IDLE not accepted by server: ~A" response)
-               (setf result :error)
-               (return-from idle-wait result)))
+           ;; Enter IDLE mode
+           (unless (mel.folders.imap:idle-start folder)
+             (log-message :warn "IDLE not accepted by server")
+             (setf result :error)
+             (return-from idle-wait result))
            ;; Poll for server pushes using listen + sleep
            (loop
              (when (>= (get-universal-time) deadline)
                (setf result :timeout)
                (return))
-             (if (listen stream)
-                 ;; Data available — read and check for mailbox changes
-                 (handler-case
-                     (let ((response (mel.folders.imap::read-response stream)))
-                       (when (and (eql (first response) #\*)
-                                  (numberp (second response)))
-                         (let ((cmd (first (third response))))
-                           (when (member cmd '(:exists :recent :expunge))
-                             (log-message :debug "IDLE: ~A ~A" cmd (second response))
-                             (setf result :mailbox-change)
-                             (return)))))
-                   (error (e)
-                     (log-message :warn "IDLE read error: ~A" e)
-                     (setf result :error)
-                     (return)))
-                 ;; No data yet — sleep briefly
-                 (sleep 1))))
+             (let ((response (mel.folders.imap:idle-read-response folder)))
+               (if response
+                   ;; Data available — check for mailbox changes
+                   ;; response format: (tag type &rest arguments)
+                   ;; e.g. (#\* 3 :EXISTS) — untagged numeric notification
+                   (destructuring-bind (tag number &rest arguments) response
+                     (when (and (eql tag #\*)
+                                (numberp number)
+                                (member (first arguments) '(:exists :recent :expunge)))
+                       (log-message :debug "IDLE: ~A ~A" (first arguments) number)
+                       (setf result :mailbox-change)
+                       (return)))
+                   ;; No data yet — sleep briefly
+                   (sleep 1)))))
       ;; Cleanup: terminate IDLE
       (when (member result '(:mailbox-change :timeout))
         (handler-case
-            (progn
-              (mel.folders.imap::send-command folder "done")
-              (mel.folders.imap::process-response folder))
+            (mel.folders.imap:idle-done folder)
           (error (e)
             (log-message :warn "Error ending IDLE: ~A" e)))))
     result))
@@ -81,7 +49,8 @@ TIMEOUT is in seconds (default 1500 = 25 minutes)."
                  :username (getf config :imap-user)
                  :password (getf config :imap-password)
                  :mailbox (getf config :inbox "INBOX"))))
-    (mel.folders.imap::ensure-connection folder)
+    ;; idle-start calls send-command which triggers ensure-connection,
+    ;; so no explicit connection setup needed here.
     folder))
 
 (defun run-idle-monitor (config on-new-mail)
@@ -97,9 +66,7 @@ when new mail is detected. Handles reconnection on errors."
               ;; Connect monitor if needed
               (unless monitor
                 (handler-case
-                    (progn
-                      (setf *idle-supported* :unknown)
-                      (setf monitor (connect-monitor config)))
+                    (setf monitor (connect-monitor config))
                   (error (e)
                     (log-message :error "Monitor connection failed: ~A" e)
                     (log-message :info "Retrying in ~Ds" reconnect-delay)
@@ -113,7 +80,7 @@ when new mail is detected. Handles reconnection on errors."
                                 :error))))
                 (case result
                   (:mailbox-change
-                   (log-message :info "IDLE: new mail detected")
+                   (log-message :info "IDLE: mailbox change detected")
                    (handler-case
                        (funcall on-new-mail)
                      (error (e)

@@ -81,18 +81,33 @@ FLAGS-STRING is raw IMAP syntax, e.g. \"\\\\Flagged\" or \"$SpamChecked\"."
       ;; Force connection and mailbox selection
       (mel.folders.imap::ensure-connection folder)
       (setf *use-custom-flags* t)
-      (log-message :info "Using $SpamChecked flag for tracking")
       folder)))
 
-(defun fetch-unseen-uids (folder config)
-  "Get UIDs of messages that haven't been spam-checked."
+(defun fetch-unseen-uids (folder config &key min-uid)
+  "Get UIDs of messages that haven't been spam-checked.
+When MIN-UID is given, only considers messages with UID > MIN-UID."
   (declare (ignore config))
-  (let ((all-uids (imap-search folder "not deleted")))
-    (if *use-custom-flags*
-        (let ((checked (imap-search folder "keyword $SpamChecked")))
-          (set-difference all-uids checked))
-        (remove-if (lambda (uid) (uid-processed-p (princ-to-string uid)))
-                   all-uids))))
+  (let ((query (if min-uid
+                   (format nil "not deleted uid ~A:*" (1+ min-uid))
+                   "not deleted")))
+    (let ((all-uids (imap-search folder query)))
+      (if *use-custom-flags*
+          (if min-uid
+              ;; For new messages, just check if they have the flag
+              (let ((checked (imap-search folder
+                               (format nil "keyword $SpamChecked uid ~A:*" (1+ min-uid)))))
+                (set-difference all-uids checked))
+              (let ((checked (imap-search folder "keyword $SpamChecked")))
+                (set-difference all-uids checked)))
+          (remove-if (lambda (uid) (uid-processed-p (princ-to-string uid)))
+                     all-uids)))))
+
+(defun get-max-uid (folder)
+  "Get the highest UID currently in the mailbox."
+  (let ((uids (imap-search folder "not deleted")))
+    (if uids
+        (reduce #'max uids)
+        0)))
 
 (defun fetch-headers (folder uid)
   "Fetch RFC822 headers for a message by UID. Returns a string."
