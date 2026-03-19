@@ -1,0 +1,43 @@
+;; imap-cleaner configuration
+;; Copy to ~/.imap-cleaner/config.lisp and fill in your values.
+
+(
+ ;; IMAP server settings
+ :imap-host "mail.example.com"
+ :imap-port 993
+ :imap-user "user@example.com"
+
+ ;; Use one of these for the IMAP password:
+ ;; :imap-password "your-password"
+ :imap-password-command "pass show email/imap"
+
+ ;; Mailbox settings
+ :inbox "INBOX"
+ :spam-folder "Junk"
+
+ ;; Claude API settings
+ ;; Use one of these for the API key:
+ ;; :claude-api-key "sk-ant-..."
+ :claude-api-key-command "pass show api/anthropic"
+ :claude-model "claude-sonnet-4-20250514"
+
+ ;; Prompt files (relative to config dir, or absolute paths)
+ ;; If omitted, defaults are searched in ~/.imap-cleaner/ then project prompts/
+ ;; :headers-prompt-file "headers-prompt.txt"
+ ;; :body-prompt-file "body-prompt.txt"
+
+ ;; Polling
+ :poll-interval-seconds 120
+ :max-messages-per-poll 50
+
+ ;; Classification
+ :header-confidence-threshold 80  ; below this, also check body
+ :body-max-chars 4000             ; truncate body text for API
+
+ ;; Logging
+ ;; :log-file "/var/log/imap-cleaner.log"
+ ;; :debug t
+
+ ;; Safety
+ :dry-run t  ; set to nil once you trust the classifications
+)
