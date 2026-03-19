@@ -37,7 +37,8 @@ TIMEOUT is in seconds (default 1500 = 25 minutes)."
         (handler-case
             (mel.folders.imap:idle-done folder)
           (error (e)
-            (log-message :warn "Error ending IDLE: ~A" e)))))
+            (log-message :warn "Error ending IDLE: ~A" e)
+            (setf result :error)))))
     result))
 
 (defun connect-monitor (config)
