@@ -40,6 +40,7 @@ When `:dry-run t` is set (the default), spam messages are flagged with `\Flagged
 
 ```sh
 git clone --recurse-submodules https://github.com/hanshuebner/imap-cleaner.git
+cd imap-cleaner
 ```
 
 The `--recurse-submodules` flag is needed because mel-base (the IMAP library) is included as a git submodule with patches for large mailbox support.
@@ -80,18 +81,18 @@ Secrets can be provided directly or via shell commands (e.g. using `pass`, `op`,
 
 The prompts that guide Claude's classification are in `prompts/headers-prompt.txt` and `prompts/body-prompt.txt`. You can copy them to `~/.imap-cleaner/` and customize them for your mailbox. For example, you might add context about what kind of mail your address typically receives, or whitelist specific senders.
 
-### 4. Load and run
+### 4. Test the configuration
 
-```lisp
-;; Register the project and its submodule with ASDF
-(pushnew #P"/path/to/imap-cleaner/mel-base/" asdf:*central-registry* :test #'equal)
-(pushnew #P"/path/to/imap-cleaner/" asdf:*central-registry* :test #'equal)
+```sh
+sbcl --noinform --non-interactive --load test-config.lisp
+```
 
-;; Load
-(ql:quickload "imap-cleaner")
+This tests the IMAP connection, checks IDLE capability, calls the Claude API, and classifies the last message in the inbox. Review the output to make sure everything works before running the full program.
 
-;; Run
-(imap-cleaner:main)
+### 5. Run
+
+```sh
+sbcl --noinform --non-interactive --load run.lisp
 ```
 
 On startup, imap-cleaner will:
@@ -122,6 +123,10 @@ On startup, imap-cleaner will:
 | `:body-prompt-file` | *(auto-detected)* | Custom body classification prompt |
 | `:log-file` | *(stderr)* | Log file path |
 | `:debug` | `nil` | Enable debug logging |
+
+## Compatibility
+
+imap-cleaner is developed and tested with SBCL. It uses `sb-ext:exit` in the helper scripts (`run.lisp`, `test-config.lisp`). The core system (`imap-cleaner.asd`) does not use SBCL-specific features and may work on other Common Lisp implementations, but this has not been tested. The mel-base IMAP library supports SBCL, CCL, and LispWorks.
 
 ## Dependencies
 
