@@ -19,14 +19,18 @@
  ;; Use one of these for the API key:
  ;; :claude-api-key "sk-ant-..."
  :claude-api-key-command "pass show api/anthropic"
- :claude-model "claude-sonnet-4-20250514"
+ :claude-model "claude-haiku-4-5-20251001"
 
  ;; Prompt files (relative to config dir, or absolute paths)
  ;; If omitted, defaults are searched in ~/.imap-cleaner/ then project prompts/
  ;; :headers-prompt-file "headers-prompt.txt"
  ;; :body-prompt-file "body-prompt.txt"
 
- ;; Polling
+ ;; IDLE support (push notifications for new mail)
+ :use-idle t                    ; set to nil to force polling
+ :idle-timeout-seconds 1500     ; re-issue IDLE every 25 min (max ~29 min per RFC)
+
+ ;; Polling (used when IDLE is disabled or unsupported)
  :poll-interval-seconds 120
  :max-messages-per-poll 50
 

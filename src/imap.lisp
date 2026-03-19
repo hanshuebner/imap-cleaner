@@ -38,19 +38,52 @@
   "Check if UID has already been processed."
   (gethash uid-string *processed-uids*))
 
+(defun make-ssl-imap-connection (host &key (port 993) user password (timeout 30))
+  "Connect to an IMAP server over SSL/TLS.
+Creates a plain socket, wraps it with cl+ssl, then performs IMAP login."
+  (let* ((sock (acl-compat.socket:make-socket :remote-host host
+                                               :remote-port port))
+         (ssl-stream (cl+ssl:make-ssl-client-stream sock
+                                                     :hostname host
+                                                     :external-format :latin-1))
+         (imap (make-instance 'net.post-office::imap-mailbox
+                 :socket ssl-stream
+                 :host host
+                 :timeout timeout
+                 :state :unauthorized)))
+    ;; Read server greeting
+    (multiple-value-bind (tag cmd count extra comment)
+        (net.post-office::get-and-parse-from-imap-server imap)
+      (declare (ignore cmd count extra))
+      (unless (eq :untagged tag)
+        (net.post-office:po-error :error-response
+                                  :server-string comment)))
+    ;; Login
+    (net.post-office::send-command-get-results
+     imap
+     (format nil "login ~a ~a" user password)
+     #'net.post-office::handle-untagged-response
+     (lambda (mb command count extra comment)
+       (net.post-office::check-for-success mb command count extra
+                                           comment "login")))
+    ;; Find separator character
+    (let ((res (net.post-office:mailbox-list imap)))
+      (let ((sep (cadr (car res))))
+        (when sep
+          (setf (net.post-office::mailbox-separator imap) sep))))
+    imap))
+
 (defun connect-imap (config)
-  "Connect to IMAP server. Returns the mailbox object."
+  "Connect to IMAP server over SSL. Returns the mailbox object."
   (let ((host (getf config :imap-host))
         (port (getf config :imap-port 993))
         (user (getf config :imap-user))
         (password (getf config :imap-password)))
     (log-message :info "Connecting to IMAP ~A:~A as ~A" host port user)
-    (let ((mb (net.post-office:make-imap-connection
-               host
-               :user user
-               :password password
-               :port port
-               :ssl t)))
+    (let ((mb (make-ssl-imap-connection host
+                                        :port port
+                                        :user user
+                                        :password password)))
       ;; Check for custom keyword support
       (net.post-office:select-mailbox mb (getf config :inbox "INBOX"))
       (let ((pflags (net.post-office:mailbox-permanent-flags mb)))
@@ -67,10 +100,10 @@
 (defun fetch-unseen-uids (mb config)
   "Get UIDs of messages that haven't been spam-checked."
   (net.post-office:select-mailbox mb (getf config :inbox "INBOX"))
-  (let ((all-uids (net.post-office:search-mailbox mb '(:not :deleted))))
+  (let ((all-uids (net.post-office:search-mailbox mb '(not :deleted) :uid t)))
     (if *use-custom-flags*
         ;; Search for messages without $SpamChecked flag
-        (let ((checked (net.post-office:search-mailbox mb '(:keyword "$SpamChecked"))))
+        (let ((checked (net.post-office:search-mailbox mb '(keyword "$SpamChecked") :uid t)))
           (set-difference all-uids checked))
         ;; Filter using local UID tracking
         (remove-if (lambda (uid) (uid-processed-p (princ-to-string uid)))
@@ -81,17 +114,7 @@
   (let ((parts (net.post-office:fetch-parts mb uid '("RFC822.HEADER")
                                             :uid t)))
     (when parts
-      ;; fetch-parts returns ((uid (part-name value) ...))
-      (let ((msg-parts (cdr (assoc uid parts))))
-        (if msg-parts
-            (second (assoc "RFC822.HEADER" msg-parts :test #'string-equal))
-            ;; Try alternate response format
-            (loop for entry in parts
-                  when (and (listp entry) (listp (cdr entry)))
-                    do (loop for part in (cdr entry)
-                             when (and (listp part)
-                                       (string-equal (car part) "RFC822.HEADER"))
-                               return (second part))))))))
+      (net.post-office:fetch-field uid "RFC822.HEADER" parts :uid t))))
 
 (defun strip-html (text)
   "Remove HTML tags from text."
@@ -112,20 +135,13 @@
   (let ((parts (net.post-office:fetch-parts mb uid '("RFC822")
                                             :uid t)))
     (when parts
-      (let ((raw nil))
-        ;; Navigate response structure to get raw body
-        (loop for entry in parts
-              when (listp entry)
-                do (loop for part in (if (listp (cdr entry)) (cdr entry) (list entry))
-                         when (and (listp part)
-                                   (string-equal (car part) "RFC822"))
-                           do (setf raw (second part))))
+      (let ((raw (net.post-office:fetch-field uid "RFC822" parts :uid t)))
         (when raw
           (extract-text-body raw (getf config :body-max-chars 4000)))))))
 
 (defun move-to-spam (mb uid spam-folder)
   "Move a message to the spam folder: COPY, flag deleted, expunge."
-  (net.post-office:copy-msg mb uid spam-folder :uid t)
+  (net.post-office:copy-to-mailbox mb uid spam-folder :uid t)
   (net.post-office:alter-flags mb uid :add-flags '(:deleted) :uid t)
   (net.post-office:expunge-mailbox mb))
 
@@ -161,7 +177,7 @@
 
 (defun extract-header (headers name)
   "Extract a specific header value from raw headers string."
-  (let ((pattern (format nil "(?i)^~A:\\s*(.+?)\\s*$" (cl-ppcre:quote-meta-chars name))))
+  (let ((pattern (format nil "(?im)^~A:\\s*(.+?)\\s*$" (cl-ppcre:quote-meta-chars name))))
     (multiple-value-bind (match groups)
         (cl-ppcre:scan-to-strings pattern headers)
       (declare (ignore match))

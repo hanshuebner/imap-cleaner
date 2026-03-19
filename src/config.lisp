@@ -7,12 +7,14 @@
   '(:inbox "INBOX"
     :spam-folder "Junk"
     :poll-interval-seconds 120
-    :claude-model "claude-sonnet-4-20250514"
+    :claude-model "claude-haiku-4-5-20251001"
     :header-confidence-threshold 80
     :max-messages-per-poll 50
     :body-max-chars 4000
     :dry-run nil
-    :imap-port 993)
+    :imap-port 993
+    :use-idle t
+    :idle-timeout-seconds 1500)
   "Default configuration values.")
 
 (defun default-config-path ()

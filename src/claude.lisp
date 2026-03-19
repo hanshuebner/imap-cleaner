@@ -18,10 +18,18 @@
                            (or value ""))))
     result))
 
-(defun call-claude (config system-prompt user-content &key (max-retries 3))
-  "Call the Claude API. Returns the response text or NIL on failure."
+(defun get-retry-after (response-headers)
+  "Extract retry-after seconds from response headers, or NIL if absent."
+  (let ((value (cdr (assoc "retry-after" response-headers :test #'string-equal))))
+    (when value
+      (handler-case (parse-integer (string-trim '(#\Space) value) :junk-allowed t)
+        (error () nil)))))
+
+(defun call-claude (config system-prompt user-content &key (timeout 120))
+  "Call the Claude API with retries. Retries rate-limit and server errors
+for up to TIMEOUT seconds (default 120). Returns response text or NIL."
   (let ((api-key (getf config :claude-api-key))
-        (model (getf config :claude-model "claude-sonnet-4-20250514")))
+        (model (getf config :claude-model "claude-haiku-4-5-20251001")))
     (unless api-key
       (error "Claude API key not configured"))
     (let ((body (with-output-to-string (s)
@@ -37,45 +45,59 @@
                    s)))
           (headers `(("x-api-key" . ,api-key)
                      ("anthropic-version" . "2023-06-01")
-                     ("content-type" . "application/json"))))
-      (loop for attempt from 1 to max-retries
-            do (handler-case
-                   (multiple-value-bind (body-bytes status response-headers)
-                       (dex:post *claude-api-url*
-                                 :content body
-                                 :headers headers
-                                 :want-stream nil)
-                     (declare (ignore response-headers))
-                     (cond
-                       ((= status 200)
-                        (let* ((response (yason:parse
-                                          (if (stringp body-bytes)
-                                              body-bytes
-                                              (babel:octets-to-string body-bytes :encoding :utf-8))))
-                               (content (gethash "content" response))
-                               (first-block (first content)))
-                          (when first-block
-                            (return (gethash "text" first-block)))))
-                       ((= status 401)
-                        (log-message :error "Claude API authentication failed (401)")
-                        (error "Claude API authentication failed"))
-                       ((= status 429)
-                        (log-message :warn "Claude API rate limited (429), attempt ~D/~D"
-                                     attempt max-retries)
-                        (sleep (* attempt 5)))
-                       ((>= status 500)
-                        (log-message :warn "Claude API server error (~D), attempt ~D/~D"
-                                     status attempt max-retries)
-                        (sleep (* attempt 3)))
-                       (t
-                        (log-message :error "Claude API unexpected status: ~D" status)
-                        (return nil))))
-                 (error (e)
-                   (log-message :warn "Claude API request error: ~A, attempt ~D/~D"
-                                e attempt max-retries)
-                   (when (= attempt max-retries)
-                     (return nil))
-                   (sleep (* attempt 3))))))))
+                     ("content-type" . "application/json")))
+          (deadline (+ (get-universal-time) timeout))
+          (attempt 0))
+      (loop
+        (incf attempt)
+        (when (>= (get-universal-time) deadline)
+          (log-message :error "Claude API: giving up after ~Ds" timeout)
+          (return nil))
+        (handler-case
+            (multiple-value-bind (body-bytes status response-headers)
+                (dex:post *claude-api-url*
+                          :content body
+                          :headers headers
+                          :want-stream nil)
+              (cond
+                ((= status 200)
+                 (let* ((response (yason:parse
+                                   (if (stringp body-bytes)
+                                       body-bytes
+                                       (babel:octets-to-string body-bytes :encoding :utf-8))))
+                        (content (gethash "content" response))
+                        (first-block (first content)))
+                   (when first-block
+                     (return (gethash "text" first-block)))))
+                ((= status 401)
+                 (log-message :error "Claude API authentication failed (401)")
+                 (error "Claude API authentication failed"))
+                ((= status 429)
+                 (let ((wait (or (get-retry-after response-headers)
+                                 (min (* attempt 5) 30))))
+                   (log-message :warn "Rate limited (429), waiting ~Ds (attempt ~D)"
+                                wait attempt)
+                   (sleep wait)))
+                ((= status 529)
+                 (let ((wait (min (* attempt 10) 60)))
+                   (log-message :warn "API overloaded (529), waiting ~Ds (attempt ~D)"
+                                wait attempt)
+                   (sleep wait)))
+                ((>= status 500)
+                 (let ((wait (min (* attempt 5) 30)))
+                   (log-message :warn "Server error (~D), waiting ~Ds (attempt ~D)"
+                                status wait attempt)
+                   (sleep wait)))
+                (t
+                 (log-message :error "Claude API unexpected status: ~D" status)
+                 (return nil))))
+          (error (e)
+            (let ((wait (min (* attempt 3) 15)))
+              (log-message :warn "Request error: ~A, waiting ~Ds (attempt ~D)"
+                           e wait attempt)
+              (when (>= (get-universal-time) deadline)
+                (return nil))
+              (sleep wait))))))))
 
 (defstruct spam-verdict
   (label :unknown :type keyword)   ; :spam or :ham
