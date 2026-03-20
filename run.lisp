@@ -1,8 +1,11 @@
-;;; Run imap-cleaner
-;;; Usage: sbcl --noinform --non-interactive --load run.lisp [--scan N]
+;;; Run imap-cleaner from source
+;;; Usage: sbcl --noinform --non-interactive --load run.lisp [OPTIONS]
+;;;
+;;; Options:
+;;;   --config PATH   Configuration file (default: ~/.imap-cleaner/config.lisp)
+;;;   --scan N         Check the last N messages, print statistics, and exit
 ;;;
 ;;; Default: monitor for new mail via IDLE (or polling as fallback)
-;;; --scan N: check the last N messages, print statistics, and exit
 
 (unless (find-package :quicklisp)
   (format *error-output* "Error: Quicklisp is not installed.~%~
@@ -15,13 +18,27 @@
 
 (ql:quickload "imap-cleaner" :silent t)
 
-(let* ((args (uiop:command-line-arguments))
-       (scan-pos (position "--scan" args :test #'string=)))
-  (if scan-pos
-      (let ((count (and (< (1+ scan-pos) (length args))
-                        (parse-integer (nth (1+ scan-pos) args) :junk-allowed t))))
-        (unless (and count (plusp count))
-          (format *error-output* "Error: --scan requires a positive integer argument~%")
-          (sb-ext:exit :code 1))
-        (imap-cleaner:scan count))
-      (imap-cleaner:main)))
+(let* ((args (remove "--" (uiop:command-line-arguments) :test #'string=))
+       (config-path nil)
+       (scan-count nil))
+  ;; Parse arguments
+  (loop with rest = args
+        while rest do
+    (let ((arg (pop rest)))
+      (cond
+        ((string= arg "--config")
+         (setf config-path (pop rest)))
+        ((string= arg "--scan")
+         (let ((val (pop rest)))
+           (setf scan-count (and val (parse-integer val :junk-allowed t)))))
+        (t
+         (format *error-output* "Unknown option: ~A~%" arg)
+         (sb-ext:exit :code 1)))))
+  (cond
+    ((and scan-count (plusp scan-count))
+     (imap-cleaner:scan scan-count config-path))
+    (scan-count
+     (format *error-output* "Error: --scan requires a positive integer argument~%")
+     (sb-ext:exit :code 1))
+    (t
+     (imap-cleaner:main config-path))))

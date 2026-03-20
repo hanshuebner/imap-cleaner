@@ -27,32 +27,64 @@ If the server doesn't support IDLE, imap-cleaner falls back to polling.
 
 When `:dry-run t` is set (the default), spam messages are flagged with `\Flagged` instead of being moved. This lets you review classifications in your mail client before trusting the system. Set `:dry-run nil` once you're satisfied.
 
-## Requirements
+## Building
+
+### Requirements
 
 - [SBCL](http://www.sbcl.org/) (tested with 2.5.x)
 - [Quicklisp](https://www.quicklisp.org/)
+- [buildapp](https://www.xach.com/lisp/buildapp/)
 - An IMAP server with SSL (port 993)
 - A [Claude API key](https://console.anthropic.com/)
 
-## Setup
+### Install Quicklisp
 
-### 1. Clone the repository
+```sh
+curl -O https://beta.quicklisp.org/quicklisp.lisp
+sbcl --noinform --non-interactive \
+  --load quicklisp.lisp \
+  --eval '(quicklisp-quickstart:install)' \
+  --eval '(ql:add-to-init-file)'
+```
+
+### Install buildapp
+
+```sh
+sbcl --noinform --non-interactive \
+  --eval '(ql:quickload "buildapp")' \
+  --eval '(buildapp:build-buildapp "buildapp")'
+sudo install buildapp /usr/local/bin/
+```
+
+### Build
 
 ```sh
 git clone --recurse-submodules https://github.com/hanshuebner/imap-cleaner.git
 cd imap-cleaner
+make
 ```
 
-The `--recurse-submodules` flag is needed because mel-base (the IMAP library) is included as a git submodule with patches for large mailbox support.
+This produces a standalone `imap-cleaner` binary.
 
-### 2. Create a configuration file
+### Install
 
 ```sh
-mkdir -p ~/.imap-cleaner
-cp config.lisp.example ~/.imap-cleaner/config.lisp
+sudo make install
 ```
 
-Edit `~/.imap-cleaner/config.lisp` with your settings:
+This installs:
+- The binary to `/usr/local/bin/imap-cleaner`
+- Prompt files and example config to `/usr/local/etc/imap-cleaner/`
+
+On Debian, use `SYSCONFDIR=/etc` to put config files in `/etc/imap-cleaner/`:
+
+```sh
+sudo make install SYSCONFDIR=/etc
+```
+
+## Configuration
+
+Edit the config file (installed to `/usr/local/etc/imap-cleaner/config.lisp` or `/etc/imap-cleaner/config.lisp`):
 
 ```lisp
 (
@@ -77,30 +109,11 @@ Edit `~/.imap-cleaner/config.lisp` with your settings:
 
 Secrets can be provided directly or via shell commands (e.g. using `pass`, `op`, or `security`).
 
-### 3. Customize the classification prompts (optional)
+### Classification prompts
 
-The prompts that guide Claude's classification are in `prompts/headers-prompt.txt` and `prompts/body-prompt.txt`. You can copy them to `~/.imap-cleaner/` and customize them for your mailbox. For example, you might add context about what kind of mail your address typically receives, or whitelist specific senders.
+The prompts that guide Claude's classification are installed alongside the config. You can customize `headers-prompt.txt` and `body-prompt.txt` for your mailbox -- for example, adding context about what kind of mail your address typically receives, or whitelisting specific senders.
 
-### 4. Test the configuration
-
-```sh
-sbcl --noinform --non-interactive --load test-config.lisp
-```
-
-This tests the IMAP connection, checks IDLE capability, calls the Claude API, and classifies the last message in the inbox. Review the output to make sure everything works before running the full program.
-
-### 5. Run
-
-```sh
-sbcl --noinform --non-interactive --load run.lisp
-```
-
-On startup, imap-cleaner will:
-1. Check the last 10 messages in the inbox
-2. Test for IDLE support
-3. Enter IDLE mode (or fall back to polling)
-
-## Configuration reference
+### Configuration reference
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -124,9 +137,104 @@ On startup, imap-cleaner will:
 | `:log-file` | *(stderr)* | Log file path |
 | `:debug` | `nil` | Enable debug logging |
 
+## Usage
+
+```
+imap-cleaner [OPTIONS]
+
+Options:
+  --config PATH   Configuration file (default: ~/.imap-cleaner/config.lisp)
+  --scan N        Scan last N messages, print statistics, and exit
+  --help          Show help message
+```
+
+Test your configuration by scanning a few messages:
+
+```sh
+imap-cleaner --config /usr/local/etc/imap-cleaner/config.lisp --scan 5
+```
+
+Run in monitoring mode:
+
+```sh
+imap-cleaner --config /usr/local/etc/imap-cleaner/config.lisp
+```
+
+## Deployment
+
+### Debian / Ubuntu
+
+Create a service user and install the systemd service:
+
+```sh
+sudo useradd --system --create-home --shell /usr/sbin/nologin imap-cleaner
+sudo chown imap-cleaner:imap-cleaner /etc/imap-cleaner/config.lisp
+sudo mkdir -p /home/imap-cleaner/.imap-cleaner
+sudo chown imap-cleaner:imap-cleaner /home/imap-cleaner/.imap-cleaner
+sudo make install-service-debian SYSCONFDIR=/etc
+sudo systemctl enable imap-cleaner
+sudo systemctl start imap-cleaner
+```
+
+View logs:
+
+```sh
+journalctl -u imap-cleaner -f
+```
+
+### FreeBSD
+
+Create a service user and install the rc script:
+
+```sh
+sudo pw useradd imap-cleaner -d /home/imap-cleaner -m -s /usr/sbin/nologin -c "IMAP Cleaner"
+sudo chown imap-cleaner:imap-cleaner /usr/local/etc/imap-cleaner/config.lisp
+sudo mkdir -p /home/imap-cleaner/.imap-cleaner
+sudo chown imap-cleaner:imap-cleaner /home/imap-cleaner/.imap-cleaner
+sudo touch /var/log/imap-cleaner.log
+sudo chown imap-cleaner:imap-cleaner /var/log/imap-cleaner.log
+sudo gmake install-service-freebsd
+sudo sysrc imap_cleaner_enable=YES
+sudo service imap_cleaner start
+```
+
+View logs:
+
+```sh
+tail -f /var/log/imap-cleaner.log
+```
+
+### Monitoring
+
+imap-cleaner logs to stderr (or a configured log file) and reconnects automatically on connection failures with backoff. The systemd service is configured with `Restart=on-failure` and the FreeBSD rc script uses `daemon(8)`, so the process will be restarted if it exits unexpectedly.
+
+To check if the service is running:
+
+```sh
+# Debian
+systemctl status imap-cleaner
+
+# FreeBSD
+service imap_cleaner status
+```
+
+## Running from source
+
+For development, you can run directly with SBCL without building:
+
+```sh
+sbcl --noinform --non-interactive --load run.lisp [--config PATH] [--scan N]
+```
+
+Or use the test script to verify your configuration:
+
+```sh
+sbcl --noinform --non-interactive --load test-config.lisp
+```
+
 ## Compatibility
 
-imap-cleaner is developed and tested with SBCL. It uses `sb-ext:exit` in the helper scripts (`run.lisp`, `test-config.lisp`). The core system (`imap-cleaner.asd`) does not use SBCL-specific features and may work on other Common Lisp implementations, but this has not been tested. The mel-base IMAP library supports SBCL, CCL, and LispWorks.
+imap-cleaner is developed and tested with SBCL. The built binary and helper scripts (`run.lisp`, `test-config.lisp`) use SBCL-specific features. The core system (`imap-cleaner.asd`) does not use SBCL-specific features and may work on other Common Lisp implementations, but this has not been tested. The mel-base IMAP library supports SBCL, CCL, and LispWorks.
 
 ## Dependencies
 

@@ -205,3 +205,49 @@ Only processes messages that arrived after monitoring started."
             (when (getf config :use-idle)
               (log-message :info "Falling back to polling mode"))
             (run-poll-loop config))))))
+
+(defun print-usage ()
+  (write-string "Usage: imap-cleaner [OPTIONS]
+
+Options:
+  --config PATH   Configuration file (default: ~/.imap-cleaner/config.lisp)
+  --scan N        Scan last N messages, print statistics, and exit
+  --help          Show this help message
+"))
+
+(defun toplevel (argv)
+  "Command-line entry point for buildapp binary."
+  (let ((args (rest argv))
+        (config-path nil)
+        (scan-count nil))
+    (loop while args do
+      (let ((arg (pop args)))
+        (cond
+          ((string= arg "--help")
+           (print-usage)
+           (sb-ext:exit :code 0))
+          ((string= arg "--config")
+           (unless args
+             (format *error-output* "Error: --config requires an argument~%")
+             (sb-ext:exit :code 1))
+           (setf config-path (pop args)))
+          ((string= arg "--scan")
+           (unless args
+             (format *error-output* "Error: --scan requires a positive integer argument~%")
+             (sb-ext:exit :code 1))
+           (let ((n (parse-integer (pop args) :junk-allowed t)))
+             (unless (and n (plusp n))
+               (format *error-output* "Error: --scan requires a positive integer argument~%")
+               (sb-ext:exit :code 1))
+             (setf scan-count n)))
+          (t
+           (format *error-output* "Unknown option: ~A~%" arg)
+           (print-usage)
+           (sb-ext:exit :code 1)))))
+    (handler-case
+        (if scan-count
+            (scan scan-count config-path)
+            (main config-path))
+      (error (e)
+        (format *error-output* "Error: ~A~%" e)
+        (sb-ext:exit :code 1)))))

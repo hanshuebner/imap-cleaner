@@ -1,0 +1,25 @@
+[Unit]
+Description=IMAP Cleaner - AI-powered spam classifier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=imap-cleaner
+Group=imap-cleaner
+ExecStart=/usr/local/bin/imap-cleaner --config /etc/imap-cleaner/config.lisp
+Restart=on-failure
+RestartSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=imap-cleaner
+
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/imap-cleaner/.imap-cleaner
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
