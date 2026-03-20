@@ -17,7 +17,7 @@ $(BINARY):
 		--load ~/quicklisp/setup.lisp \
 		--eval '(pushnew (truename ".") asdf:*central-registry* :test (function equal))' \
 		--eval '(pushnew (truename "mel-base/") asdf:*central-registry* :test (function equal))' \
-		--load-system imap-cleaner \
+		--eval '(ql:quickload "imap-cleaner" :silent t)' \
 		--entry imap-cleaner:toplevel
 
 clean:
