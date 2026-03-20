@@ -15,10 +15,16 @@ load_rc_config $name
 : ${imap_cleaner_user:="imap-cleaner"}
 : ${imap_cleaner_config:="/usr/local/etc/imap-cleaner/config.lisp"}
 : ${imap_cleaner_logfile:="/var/log/imap-cleaner.log"}
-: ${imap_cleaner_pidfile:="/var/run/imap_cleaner.pid"}
 
-pidfile="${imap_cleaner_pidfile}"
+pidfile="/var/run/imap_cleaner.pid"
 command="/usr/sbin/daemon"
 command_args="-P ${pidfile} -u ${imap_cleaner_user} -o ${imap_cleaner_logfile} -t imap-cleaner /usr/local/bin/imap-cleaner --config ${imap_cleaner_config}"
+
+start_precmd="imap_cleaner_prestart"
+
+imap_cleaner_prestart()
+{
+	install -o root -g wheel -m 644 /dev/null "${pidfile}"
+}
 
 run_rc_command "$1"
