@@ -19,6 +19,6 @@ load_rc_config $name
 
 pidfile="${imap_cleaner_pidfile}"
 command="/usr/sbin/daemon"
-command_args="-p ${pidfile} -u ${imap_cleaner_user} -o ${imap_cleaner_logfile} -t imap-cleaner /usr/local/bin/imap-cleaner --config ${imap_cleaner_config}"
+command_args="-P ${pidfile} -u ${imap_cleaner_user} -o ${imap_cleaner_logfile} -t imap-cleaner /usr/local/bin/imap-cleaner --config ${imap_cleaner_config}"
 
 run_rc_command "$1"
