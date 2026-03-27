@@ -10,6 +10,7 @@ Consider these signals:
 - Subject line patterns: urgency, ALL CAPS, excessive punctuation (!! etc.), common spam phrases, unsolicited commercial offers, health/weight loss claims, prize/giveaway offers, SEO services, get-rich-quick schemes
 - Randomized or obfuscated Return-Path/Message-ID that don't match the sender domain
 - Suspicious sender domains: random strings, unusual TLDs (.shop, .homes, .vip, .hair), domains that look auto-generated
+- Absence notices are often caused by forged emails using our own address
 
 Important: Bulk mail headers (Precedence: bulk, List-Unsubscribe, List-Unsubscribe-Post) alone are NOT spam indicators. Legitimate newsletters from known organizations use these headers. Only flag bulk mail as spam if there are additional strong spam signals.
 
