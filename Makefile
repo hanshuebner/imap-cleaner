@@ -36,6 +36,8 @@ install: $(BINARY)
 
 install-service-freebsd: install
 	install -m 555 deploy/freebsd/imap-cleaner.rc $(DESTDIR)$(PREFIX)/etc/rc.d/imap_cleaner
+	install -d $(DESTDIR)$(PREFIX)/etc/newsyslog.conf.d
+	install -m 644 deploy/freebsd/newsyslog.conf $(DESTDIR)$(PREFIX)/etc/newsyslog.conf.d/imap-cleaner.conf
 	@echo "Enable with: sysrc imap_cleaner_enable=YES"
 	@echo "Start with:  service imap_cleaner start"
 

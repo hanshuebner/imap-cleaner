@@ -36,6 +36,8 @@ gmake install-service-freebsd
 echo ""
 echo "=== Setup complete ==="
 echo ""
+echo "Log rotation configured via newsyslog (7 rotations, 1MB max, compressed)."
+echo ""
 echo "Next steps:"
 echo "  1. Edit ${CONFIG_DIR}/config.lisp"
 echo "  2. Test:  su -m ${SERVICE_USER} -c 'imap-cleaner --config ${CONFIG_DIR}/config.lisp --scan 5'"
