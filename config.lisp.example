@@ -42,6 +42,14 @@
  ;; :log-file "/var/log/imap-cleaner.log"
  ;; :debug t
 
+ ;; SMTP filter mode (--smtp flag)
+ ;; Used with Postfix smtpd_proxy_filter or content_filter
+ ;; :smtp-listen-address "127.0.0.1"
+ ;; :smtp-listen-port 10025
+ ;; :smtp-downstream-host "127.0.0.1"  ; Postfix re-injection service
+ ;; :smtp-downstream-port 10026
+ ;; :smtp-banner-host "localhost"
+
  ;; Safety
  :dry-run t  ; set to nil once you trust the classifications
 )

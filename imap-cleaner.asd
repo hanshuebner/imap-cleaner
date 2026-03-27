@@ -6,7 +6,8 @@
                "yason"
                "alexandria"
                "cl-ppcre"
-               "babel")
+               "babel"
+               "usocket")
   :serial t
   :components ((:module "src"
                 :serial t
@@ -17,4 +18,5 @@
                              (:file "idle")
                              (:file "claude")
                              (:file "classifier")
+                             (:file "smtp-server")
                              (:file "main")))))

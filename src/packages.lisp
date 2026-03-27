@@ -1,3 +1,3 @@
 (defpackage #:imap-cleaner
   (:use #:cl #:alexandria)
-  (:export #:main #:scan #:toplevel))
+  (:export #:main #:scan #:smtp-main #:toplevel))

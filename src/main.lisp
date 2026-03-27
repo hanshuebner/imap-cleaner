@@ -212,6 +212,7 @@ Only processes messages that arrived after monitoring started."
 Options:
   --config PATH   Configuration file (default: ~/.imap-cleaner/config.lisp)
   --scan N        Scan last N messages, print statistics, and exit
+  --smtp          Run as SMTP filter server (for Postfix integration)
   --help          Show this help message
 "))
 
@@ -219,7 +220,8 @@ Options:
   "Command-line entry point for buildapp binary."
   (let ((args (rest argv))
         (config-path nil)
-        (scan-count nil))
+        (scan-count nil)
+        (smtp-mode nil))
     (loop while args do
       (let ((arg (pop args)))
         (cond
@@ -240,14 +242,17 @@ Options:
                (format *error-output* "Error: --scan requires a positive integer argument~%")
                (sb-ext:exit :code 1))
              (setf scan-count n)))
+          ((string= arg "--smtp")
+           (setf smtp-mode t))
           (t
            (format *error-output* "Unknown option: ~A~%" arg)
            (print-usage)
            (sb-ext:exit :code 1)))))
     (handler-case
-        (if scan-count
-            (scan scan-count config-path)
-            (main config-path))
+        (cond
+          (smtp-mode (smtp-main config-path))
+          (scan-count (scan scan-count config-path))
+          (t (main config-path)))
       (error (e)
         (format *error-output* "Error: ~A~%" e)
         (sb-ext:exit :code 1)))))
